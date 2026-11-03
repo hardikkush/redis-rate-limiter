@@ -1,119 +1,246 @@
 # Redis Rate Limiter
 
-A Redis-powered rate limiting system built with Spring Boot and Java 25, exploring how distributed applications control incoming API traffic using the **Sliding Window Log** algorithm.
+A Redis-powered API rate limiter built using **Spring Boot, Java, Redis Sorted Sets, and Lua scripting**.
 
-## Overview
+This project implements the **Sliding Window Log algorithm** to enforce per-user request limits. Redis stores request timestamps, while Lua scripts execute the rate-limiting operations atomically.
 
-Rate limiting is a technique used to restrict how many requests a client can make within a specific time period.
+## Features
 
-This project explores how Redis can be used to implement an efficient and centralized rate limiter, helping prevent excessive API requests while maintaining consistent limits across application instances.
-
-The primary goal is to understand Redis data structures, atomic operations, and Lua scripting through a practical backend project.
+- Sliding Window Log rate-limiting algorithm
+- Redis Sorted Sets (ZSET) for request tracking
+- Atomic rate-limit execution using Lua scripts
+- Per-user request limits
+- Automatic expired-request removal
+- Redis key expiration (TTL)
+- Spring Boot `OncePerRequestFilter` integration
+- HTTP 400 for missing user identification
+- HTTP 429 when the rate limit is exceeded
 
 ## Tech Stack
 
-- **Language:** Java 25
-- **Framework:** Spring Boot 4.1.2
-- **Database / In-memory Store:** Redis
-- **Redis Data Structure:** Sorted Sets (ZSET)
-- **Scripting:** Redis Lua Scripts
-- **Build Tool:** Maven
-- **API Testing:** Postman
+- Java 25
+- Spring Boot 4.1.2
+- Spring Data Redis
+- Redis
+- Lua
+- Maven
+- Postman
 
-## Rate Limiting Algorithm
+## Rate Limiting Configuration
 
-The project focuses on the **Sliding Window Log** algorithm.
+| Configuration | Value |
+|---|---|
+| Algorithm | Sliding Window Log |
+| Request limit | 5 requests |
+| Time window | 60 seconds |
+| Redis data structure | Sorted Set |
+| Redis key format | `rate:{userId}` |
+| Key expiration | 120 seconds |
 
-Unlike a fixed window counter, which resets at fixed time boundaries, the sliding window log considers requests within a continuously moving time window.
+## How It Works
 
-For example, with a limit of 5 requests per 60 seconds:
+The application uses the Sliding Window Log algorithm.
 
-- Each incoming request is recorded with its timestamp.
-- Requests older than the current 60-second window are removed.
-- The remaining requests are counted.
-- If the count is below the limit, the request is allowed.
-- Otherwise, the request is rejected with HTTP `429 Too Many Requests`.
+Each incoming request is associated with a user ID supplied through the `X-User-Id` HTTP header.
 
-## Why Redis Sorted Sets?
+Redis maintains a separate Sorted Set for each user.
 
-Redis Sorted Sets (ZSET) are used to maintain request timestamps efficiently.
+- **Key:** `rate:user101`
+- **Score:** Request timestamp in milliseconds
+- **Member:** Unique request ID (UUID)
 
-- **Score:** Request timestamp.
-- **Member:** Unique request identifier.
-- **ZREMRANGEBYSCORE:** Removes expired requests.
-- **ZCARD:** Counts requests in the active window.
-- **ZADD:** Records a new request.
+For every incoming request:
 
-## Atomic Execution with Lua
+1. Calculate the sliding window cutoff timestamp.
+2. Remove requests older than or equal to the cutoff.
+3. Count the remaining requests.
+4. Reject the request if the limit has already been reached.
+5. Otherwise, add the new request to the Sorted Set.
+6. Update the Redis key expiration.
 
-A rate limiter must handle concurrent requests correctly.
+All these operations are executed through a Lua script to ensure atomic execution.
 
-If multiple requests check the request count simultaneously, they could all pass the check and exceed the configured limit.
+## Request Flow
 
-To prevent this, Redis Lua scripting will execute the rate-limiting operations atomically:
-
-1. Remove expired requests.
-2. Count active requests.
-3. Check the configured limit.
-4. Record the request if allowed.
-5. Set key expiration.
-
-This keeps the complete decision process atomic within Redis.
-
-## Architecture
-
-```mermaid
-flowchart TD
-    A[Client / Postman] --> B[Spring Boot Application]
-    B --> C[Rate Limit Filter]
-    C --> D[Rate Limiter Service]
-    D --> E[Redis Lua Script]
-    E --> F[Redis Sorted Set]
-    C -->|Allowed| G[REST Controller]
-    C -->|Rejected| H[HTTP 429 Response]
+```text
+Client / Postman
+       |
+       v
+RateLimitFilter
+       |
+       v
+Read X-User-Id Header
+       |
+       v
+SlidingWindowRateLimiterService
+       |
+       v
+Redis Lua Script
+       |
+       v
+Check Request Limit
+       |
+       +------------------+
+       |                  |
+       v                  v
+    Allowed             Rejected
+       |                  |
+       v                  v
+   Controller        HTTP 429
+       |
+       v
+   HTTP 200
 ```
 
-## Planned Features
+## API Endpoints
 
-- [ ] Configure Spring Boot and Redis connection.
-- [ ] Implement a basic fixed-window rate limiter for comparison.
-- [ ] Implement Sliding Window Log using Redis Sorted Sets.
-- [ ] Execute rate-limiting operations through Lua scripts.
-- [ ] Create a reusable rate-limiting service.
-- [ ] Integrate rate limiting using a Spring Boot filter.
-- [ ] Return HTTP 429 when the request limit is exceeded.
-- [ ] Test concurrent requests and edge cases.
-- [ ] Document API endpoints and implementation decisions.
+### 1. Rate-Limited API
 
-## Initial Configuration
+```http
+GET /api/test
+```
 
-The initial rate limit will be:
+Required header:
 
-| Setting | Value |
+```http
+X-User-Id: user101
+```
+
+Expected responses:
+
+| Scenario | HTTP Status |
 |---|---|
-| Maximum requests | 5 |
-| Time window | 60 seconds |
-| Algorithm | Sliding Window Log |
-| Redis data structure | Sorted Set |
-| Client identification | Request header |
+| Request within limit | 200 OK |
+| Missing user ID | 400 Bad Request |
+| Request limit exceeded | 429 Too Many Requests |
 
-These values may become configurable as the project evolves.
+### 2. Redis Health Check
 
-## Learning Objectives
+```http
+GET /redis/ping
+```
 
-Through this project, I aim to gain practical experience with:
+Checks Redis connectivity.
 
-- Redis data structures and commands.
-- Rate-limiting algorithms.
-- Atomic execution and concurrency.
-- Redis Lua scripting.
-- Spring Boot filters and interceptors.
-- Distributed application design.
+Expected response:
 
-## Project Status
+```text
+PONG
+```
 
-🚧 **Under Development**
+### 3. Manual Rate-Limit Test Endpoint
 
-This is a hands-on learning project focused on understanding Redis and implementing rate limiting in a Spring Boot application.
+```http
+GET /rate-limit/check/{userId}
+```
 
-More implementation details, API examples, and testing documentation will be added as development progresses.
+Allows direct testing of the rate-limiting service.
+
+## Running Locally
+
+### Prerequisites
+
+- Java 25
+- Maven
+- Redis Server
+- IntelliJ IDEA or another Java IDE
+- Postman (for API testing)
+
+### 1. Clone the repository
+
+```bash
+git clone https://github.com/hardikkush/redis-rate-limiter.git
+cd redis-rate-limiter
+```
+
+### 2. Start Redis
+
+Make sure your local Redis server is running on port `6379`.
+
+### 3. Configure Redis
+
+In `src/main/resources/application.properties`:
+
+```properties
+spring.data.redis.host=localhost
+spring.data.redis.port=6379
+spring.data.redis.timeout=2000ms
+```
+
+### 4. Run the Spring Boot application
+
+On Windows:
+
+```bash
+.\mvnw.cmd spring-boot:run
+```
+
+Alternatively, run the main application class through your IDE.
+
+### 5. Test using Postman
+
+Send requests to:
+
+```http
+GET http://localhost:8080/api/test
+```
+
+Add the header:
+
+```http
+X-User-Id: user101
+```
+
+The first five requests should succeed, while the sixth request should receive HTTP 429.
+
+Changing the user ID creates an independent rate-limit bucket.
+
+## Project Structure
+
+```text
+RateLimitDemo/
+│
+├── src/main/java/
+│   └── com/RateLimitDemo/RateLimitDemo/
+│       ├── Config/
+│       │   └── RedisScriptConfig.java
+│       │
+│       ├── Controller/
+│       │   ├── RedisHealthController.java
+│       │   ├── RateLimitTestController.java
+│       │   └── TestController.java
+│       │
+│       ├── Filter/
+│       │   └── RateLimitFilter.java
+│       │
+│       └── Service/
+│           ├── RedisHealthService.java
+│           └── SlidingWindowRateLimiterService.java
+│
+└── src/main/resources/
+    ├── application.properties
+    └── scripts/
+        └── sliding-window.lua
+```
+
+## Learning Outcomes
+
+This project helped explore:
+
+- Redis Sorted Sets and their operations
+- Sliding Window Log rate-limiting algorithm
+- Lua scripting in Redis
+- Atomic execution of Redis operations
+- TTL and automatic key expiration
+- Spring Boot servlet filters
+- Integrating Redis with Spring Boot
+
+## Future Improvements
+
+- Configurable request limits and time windows
+- Rate-limit response headers
+- Distributed load and concurrency testing
+
+---
+
+**Built as a hands-on backend learning project to explore Redis and rate limiting.**
